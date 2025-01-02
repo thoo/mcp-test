@@ -135,22 +135,69 @@ class MCPClient:
         Place all user-facing conversational responses in <reply></reply> XML tags.
         """
             
+        
+        completion_check_prompt = """
+        Review the conversation history and determine if the user's question has been completely answered.
+        If not completely answered, explain what's missing or needs clarification.
+        Follow this format:
+        1. First state "COMPLETE" or "INCOMPLETE"
+        2. Then briefly explain why
+        
+        Focus only on the most recent user query and subsequent responses.
+        """
+            
         user_message = input("\nUser: ")
         messages = [{"role": "user", "content": user_message}]
+        loop_counter = 0  # Initialize counter
+        max_loops = 20    # Maximum number of loops before forcing user input
+        
         while True:
             try:
-                # If the last message was from the assistant, get user input
-                if messages and messages[-1]["role"] == "assistant":
+                # Check if we should force user input due to max loops
+                if loop_counter >= max_loops:
+                    logger.info("\nReached maximum number of consecutive responses. Requesting user input.")
                     query = input("\nUser: ").strip()
                     if query.lower() == 'quit':
                         break
                     messages.append({
                         "role": "user",
-                        "content":  query
+                        "content": query
                     })
+                    loop_counter = 0  # Reset counter after user input
+                    continue
+
+                # Modified condition to check completion when assistant responds
+                if messages and messages[-1]["role"] == "assistant":
+                    # Check if the response is complete
+                    logger.info("running competition check")
+                    completion_check = self.anthropic.messages.create(
+                        model="claude-3-5-sonnet-20241022",
+                        system=system_prompt,
+                        max_tokens=1000,
+                        messages=messages + [{
+                            "role": "user",
+                            "content": completion_check_prompt
+                        }]
+                    )
+                    
+                    completion_response = completion_check.content[0].text
+                    logger.info(f"completion response: {completion_response}")
+                    if "INCOMPLETE" in completion_response:
+                        # Continue the conversation if incomplete
+                        logger.info("\nFollow-up:" + completion_response.split("INCOMPLETE")[1].strip())
+                        loop_counter += 1  # Increment counter
+                        continue
+                    
+                    # If complete, get next user input
+                    query = input("\nUser: ").strip()
+                    if query.lower() == 'quit':
+                        break
+                    messages.append({
+                        "role": "user",
+                        "content": query
+                    })
+                    loop_counter = 0  # Reset counter after user input
                 else:
-
-
                     # Get response from Claude
                     response = self.anthropic.messages.create(
                         model="claude-3-5-sonnet-20241022",
@@ -163,7 +210,6 @@ class MCPClient:
                     # Handle response content
                     for content in response.content:
                         if content.type == 'text':
-                            # reply = self.extract_reply(content.text)
                             reply = content.text
                             logger.info("\nAssistant: " + reply)
                             messages.append({
@@ -188,16 +234,16 @@ class MCPClient:
                                 "role": "user",
                                 "content": result.content
                             })
-                            
-                            # No need to break here - let the loop continue for another LLM call
+                    
+                    loop_counter += 1  # Increment counter after processing response
 
             except Exception as e:
                 logger.error(f"\nError: {str(e)}")
-                # Optionally, could add error to messages for context
                 messages.append({
                     "role": "system",
                     "content": f"Error occurred: {str(e)}. Please try again."
                 })
+                loop_counter = max_loops  # Force user input after error
 
         await self.cleanup()
 
